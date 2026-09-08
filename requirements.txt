@@ -1,4 +1,7 @@
-opencv-python
+opencv-python-headless
 numpy
 matplotlib
 pytesseract
+streamlit
+scikit-learn
+shap
