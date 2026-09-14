@@ -12,8 +12,17 @@ import cv2
 import numpy as np
 import pytesseract
 
-# Ensure this path is exactly where Tesseract is installed on your machine
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+import platform
+
+# Smart path detection:
+if platform.system() == "Windows":
+    # Use the Windows path for your local computer
+    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+else:
+    # On Linux (Render/Docker), Tesseract is already in the system PATH
+    # so we don't need to set a manual path.
+    pass
+
 
 def extract_text(image: np.ndarray) -> dict:
     """
@@ -101,9 +110,7 @@ def visualize_ocr(image: np.ndarray, ocr_result: dict, output_path: str) -> str:
 
 
 def save_ocr_result(ocr_result: dict, output_path: str) -> str:
-    """
-    Save OCR results to a JSON file.
-    """
+
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(ocr_result, f, indent=2, ensure_ascii=False)
