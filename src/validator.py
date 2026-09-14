@@ -2,7 +2,8 @@ import re
 from src.document_types import DOCUMENT_CONFIG, detect_document_type
 
 
-def _find_id_number(words: list, expected_len: int) -> dict:
+def _find_id_number(words: list, expected_len: int, tolerance: int = 3) -> dict:
+    # Try exact match per-word first (fast path for clean OCR).
     candidates = []
     for w in words:
         text = re.sub(r"\D", "", w["text"])
@@ -11,13 +12,34 @@ def _find_id_number(words: list, expected_len: int) -> dict:
                 "digits": text, "source_word": w["text"],
                 "bbox": w["bbox"], "confidence": w["confidence"],
             })
-    return {"found": len(candidates) > 0, "count": len(candidates),
-            "best": candidates[0] if candidates else None}
+    if candidates:
+        return {"found": True, "count": len(candidates), "best": candidates[0]}
+
+    # Fallback: OCR often splits an ID across tokens (e.g. "HP-32" + "20140003137").
+    # Concatenate all digits and accept anything within +/- tolerance of expected_len.
+    all_digits = re.sub(r"\D", "", " ".join(w["text"] for w in words))
+    if abs(len(all_digits) - expected_len) <= tolerance and len(all_digits) > 0:
+        return {"found": True, "count": 1,
+                "best": {"digits": all_digits, "source_word": "(concatenated)",
+                          "bbox": None, "confidence": None}}
+    return {"found": False, "count": 0, "best": None}
+
+
+FIELD_SYNONYMS = {
+    "dob": ["dob", "date of birth"],
+    "name": ["name"],
+    "gender": ["gender", "male", "female"],
+    "father's name": ["father's name", "father", "father name"],
+    "validity": ["validity", "valid till", "valid upto", "valid up to"],
+}
 
 
 def _detect_required_fields(words: list, required_fields: list) -> dict:
     text_lower = " ".join(w["text"].lower() for w in words)
-    found = {field: (field in text_lower) for field in required_fields}
+    found = {}
+    for field in required_fields:
+        options = FIELD_SYNONYMS.get(field, [field])
+        found[field] = any(opt in text_lower for opt in options)
     return {"fields": found, "all_present": all(found.values())}
 
 
@@ -59,9 +81,7 @@ def validate_document(ocr_result: dict, quality_result: dict, qr_result: dict, i
     config = DOCUMENT_CONFIG[doc_type]
     number_check = _find_id_number(words, config["expected_digits"])
     fields = _detect_required_fields(words, config["required_fields"])
-    number_ok = (number_check["found"]
-                 and len(number_check["best"]["digits"]) == config["expected_digits"]) \
-        if number_check["best"] else False
+    number_ok = number_check["found"]
 
     checks = {
         "image_quality_acceptable": image_ok,
