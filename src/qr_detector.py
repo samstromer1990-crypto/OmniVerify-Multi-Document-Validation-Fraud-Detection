@@ -4,6 +4,10 @@ QR code detection and decoding.
 Uses OpenCV's built-in QRCodeDetector. Each detected QR is reported
 with its location, decoded contents, and a readability flag.
 
+OpenCV's detector is unreliable on small/scaled-down QR regions (common
+in screenshots or compressed uploads), so detection is retried at a
+few scales/color modes before giving up.
+
 We never claim a QR proves authenticity — only that it is present,
 located somewhere, and decodable. Content verification is a separate step.
 """
@@ -11,6 +15,16 @@ located somewhere, and decodable. Content verification is a separate step.
 import os
 import cv2
 import numpy as np
+
+
+def _attempts(image: np.ndarray):
+    """Yield (candidate_image, scale_factor) pairs to try detection on."""
+    yield image, 1.0
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
+    yield gray, 1.0
+    for scale in (2.0, 3.0):
+        resized = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        yield resized, scale
 
 
 def detect_qr_codes(image: np.ndarray) -> dict:
@@ -31,18 +45,16 @@ def detect_qr_codes(image: np.ndarray) -> dict:
 
     detector = cv2.QRCodeDetector()
 
-    qrcodes = []
+    decoded_info, points, used_scale = None, None, 1.0
 
-    try:
-        retval, decoded_info, points, straight_qrcodes = (
-            detector.detectAndDecodeMulti(image)
-        )
-    except cv2.error as e:
-        return {
-            "count": 0,
-            "qrcodes": [],
-            "warning": f"QR detection failed: {e}",
-        }
+    for candidate, scale in _attempts(image):
+        try:
+            retval, d_info, pts, _ = detector.detectAndDecodeMulti(candidate)
+        except cv2.error:
+            continue
+        if pts is not None and len(pts) > 0:
+            decoded_info, points, used_scale = d_info, pts, scale
+            break
 
     if points is None or len(points) == 0:
         return {"count": 0, "qrcodes": []}
@@ -50,10 +62,12 @@ def detect_qr_codes(image: np.ndarray) -> dict:
     if decoded_info is None:
         decoded_info = ["" for _ in range(len(points))]
 
+    qrcodes = []
     for i, point_set in enumerate(points):
         try:
-            x_coords = [float(p[0]) for p in point_set]
-            y_coords = [float(p[1]) for p in point_set]
+            # Map coordinates back to the original image scale.
+            x_coords = [float(p[0]) / used_scale for p in point_set]
+            y_coords = [float(p[1]) / used_scale for p in point_set]
         except (TypeError, IndexError):
             continue
 
@@ -71,7 +85,10 @@ def detect_qr_codes(image: np.ndarray) -> dict:
                 "h": y_max - y_min,
             },
             "polygon": [
-                [int(p[0]), int(p[1])] for p in point_set
+                [int(x / used_scale), int(y / used_scale)]
+                for x, y in zip(
+                    [p[0] for p in point_set], [p[1] for p in point_set]
+                )
             ],
             "decoded_text": decoded_text,
             "readable": readable,
