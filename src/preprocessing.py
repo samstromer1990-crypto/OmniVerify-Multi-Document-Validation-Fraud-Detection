@@ -143,9 +143,12 @@ def check_image_quality(image: np.ndarray) -> dict:
     else:
         resolution_status = "OK"
 
-    # Overall summary
+    # Overall summary.
+    # SLIGHTLY_BLURRY is tolerated as a pass condition — real-world
+    # phone/screenshot photos are rarely tack-sharp, and treating any
+    # non-"SHARP" image as an automatic fail was too strict.
     issues = []
-    if blur_status != "SHARP":
+    if blur_status == "BLURRY":
         issues.append(f"Blur: {blur_status}")
     if brightness_status != "OK":
         issues.append(f"Brightness: {brightness_status}")
