@@ -39,7 +39,7 @@ def _bgr_to_rgb(image: np.ndarray) -> np.ndarray:
 st.sidebar.title("📄 Document Verification")
 st.sidebar.markdown("AI-based intelligent document verification and fraud-detection prototype.")
 st.sidebar.markdown("---")
-st.sidebar.markdown("**Document Type:** Aadhaar-like")
+st.sidebar.markdown("**Document Type:** Multi-Document")
 st.sidebar.markdown("**Disclaimer:** Document-level validation only.")
 
 
