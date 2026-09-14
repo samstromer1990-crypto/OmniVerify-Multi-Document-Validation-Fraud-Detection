@@ -1,9 +1,9 @@
 """
-OCR module: extract text, bounding boxes, and confidence from a document image.
+OCR module.
 
-Uses Tesseract via pytesseract. Designed to return *structured* results
-(bounding boxes preserved) because later modules need to know WHERE on
-the document each piece of text was found.
+Uses Tesseract through pytesseract.
+Multiple preprocessing methods are tried so that
+OCR is more reliable on document images.
 """
 
 import os
@@ -11,53 +11,40 @@ import json
 import cv2
 import numpy as np
 import pytesseract
-
 import platform
 
-# Smart path detection:
+
+# Windows
 if platform.system() == "Windows":
-    # Use the Windows path for your local computer
-    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-else:
-    # On Linux (Render/Docker), Tesseract is already in the system PATH
-    # so we don't need to set a manual path.
-    pass
-
-
-def extract_text(image: np.ndarray) -> dict:
-    """
-    Run OCR on an image and return a structured result.
-    Includes adaptive thresholding to handle AI-generated images with gradients.
-    """
-    if image is None:
-        raise ValueError("Image is None")
-
-    # 1. Convert to grayscale
-    if len(image.shape) == 3:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    else:
-        gray = image
-
-    # 2. Apply Adaptive Thresholding 
-    # This removes gradients and shadows, making text "pop" for Tesseract
-    processed = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-        cv2.THRESH_BINARY, 11, 2
+    pytesseract.pytesseract.tesseract_cmd = (
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe"
     )
-    
-    # Tesseract will now read the high-contrast black-and-white image
-    data = pytesseract.image_to_data(processed, output_type=pytesseract.Output.DICT)
+
+
+def _run_tesseract(image: np.ndarray) -> dict:
+    """Run Tesseract and return structured OCR data."""
+
+    data = pytesseract.image_to_data(
+        image,
+        output_type=pytesseract.Output.DICT,
+        config="--psm 6"
+    )
 
     words = []
+
     for i in range(len(data["text"])):
+
         text = data["text"][i].strip()
-        # Tesseract returns -1 for confidence on blocks it didn't process
-        if not text or data["conf"][i] == "-1":
+
+        if not text:
             continue
 
         try:
             conf = float(data["conf"][i])
-        except ValueError:
+        except (ValueError, TypeError):
+            continue
+
+        if conf < 0:
             continue
 
         words.append({
@@ -71,10 +58,22 @@ def extract_text(image: np.ndarray) -> dict:
             },
         })
 
-    full_text = " ".join(w["text"] for w in words)
+    full_text = " ".join(
+        w["text"] for w in words
+    )
+
     mean_conf = (
-        round(float(np.mean([w["confidence"] for w in words])), 2)
-        if words else 0.0
+        round(
+            float(
+                np.mean([
+                    w["confidence"]
+                    for w in words
+                ])
+            ),
+            2
+        )
+        if words
+        else 0.0
     )
 
     return {
@@ -85,33 +84,148 @@ def extract_text(image: np.ndarray) -> dict:
     }
 
 
-def visualize_ocr(image: np.ndarray, ocr_result: dict, output_path: str) -> str:
+def extract_text(image: np.ndarray) -> dict:
     """
-    Draw bounding boxes around detected words and save the visualization.
+    Run OCR using multiple preprocessing methods.
+    The strongest OCR result is returned.
     """
+
+    if image is None:
+        raise ValueError("Image is None")
+
+    # Convert to grayscale
+    if len(image.shape) == 3:
+        gray = cv2.cvtColor(
+            image,
+            cv2.COLOR_BGR2GRAY
+        )
+    else:
+        gray = image.copy()
+
+    results = []
+
+    # --------------------------------------------------
+    # Method 1: Original grayscale
+    # --------------------------------------------------
+    results.append(
+        _run_tesseract(gray)
+    )
+
+    # --------------------------------------------------
+    # Method 2: Adaptive threshold
+    # --------------------------------------------------
+    adaptive = cv2.adaptiveThreshold(
+        gray,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        11,
+        2,
+    )
+
+    results.append(
+        _run_tesseract(adaptive)
+    )
+
+    # --------------------------------------------------
+    # Method 3: Otsu threshold
+    # --------------------------------------------------
+    _, otsu = cv2.threshold(
+        gray,
+        0,
+        255,
+        cv2.THRESH_BINARY + cv2.THRESH_OTSU,
+    )
+
+    results.append(
+        _run_tesseract(otsu)
+    )
+
+    # Choose result with most words,
+    # then use confidence as a tie-breaker.
+    best = max(
+        results,
+        key=lambda r: (
+            r["word_count"],
+            r["mean_confidence"]
+        )
+    )
+
+    return best
+
+
+def visualize_ocr(
+    image: np.ndarray,
+    ocr_result: dict,
+    output_path: str
+) -> str:
+
     if image is None:
         raise ValueError("Image is None")
 
     annotated = image.copy()
 
     for word in ocr_result["words"]:
+
         b = word["bbox"]
-        x, y, w, h = b["x"], b["y"], b["w"], b["h"]
-        cv2.rectangle(annotated, (x, y), (x + w, y + h), (0, 255, 0), 2)
-        label = word["text"]
-        cv2.putText(
-            annotated, label, (x, y - 5),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1
+
+        x = b["x"]
+        y = b["y"]
+        w = b["w"]
+        h = b["h"]
+
+        cv2.rectangle(
+            annotated,
+            (x, y),
+            (x + w, y + h),
+            (0, 255, 0),
+            2
         )
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    cv2.imwrite(output_path, annotated)
+        cv2.putText(
+            annotated,
+            word["text"],
+            (x, max(y - 5, 0)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 0),
+            1
+        )
+
+    directory = os.path.dirname(output_path)
+
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    cv2.imwrite(
+        output_path,
+        annotated
+    )
+
     return os.path.abspath(output_path)
 
 
-def save_ocr_result(ocr_result: dict, output_path: str) -> str:
+def save_ocr_result(
+    ocr_result: dict,
+    output_path: str
+) -> str:
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(ocr_result, f, indent=2, ensure_ascii=False)
+    directory = os.path.dirname(output_path)
+
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    with open(
+        output_path,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        json.dump(
+            ocr_result,
+            f,
+            indent=2,
+            ensure_ascii=False
+        )
+
     return os.path.abspath(output_path)
